@@ -23,13 +23,13 @@ class AutonomousBlobTracker:
         self.max_frames_lost = 10
         
         # Control parameters
-        self.dead_zone = 20  # Pixels from center where no movement needed
-        self.base_speed = 150  # Base motor speed
+        self.dead_zone = 15  # Pixels from center where no movement needed
+        self.base_speed = 220  # Base motor speed (increased for faster response)
         self.max_speed = 255  # Maximum motor speed
         
         # Movement timing
         self.last_command_time = 0
-        self.command_interval = 0.3  # Send commands every 100ms
+        self.command_interval = 0.05  # Send commands every 50ms for faster response
         
         # ESP32 connection test
         self.test_connection()
@@ -56,11 +56,12 @@ class AutonomousBlobTracker:
         """
         try:
             # Both motors get same speed for linear movement
+            # Send commands in parallel for faster response
             params_a = {'motor': 'A', 'speed': speed}
             params_b = {'motor': 'B', 'speed': speed}
             
-            requests.get(self.esp32_url, params=params_a, timeout=0.5)
-            requests.get(self.esp32_url, params=params_b, timeout=0.5)
+            requests.get(self.esp32_url, params=params_a, timeout=0.3)
+            requests.get(self.esp32_url, params=params_b, timeout=0.3)
             return True
         except:
             return False
@@ -84,6 +85,7 @@ class AutonomousBlobTracker:
         # Control parameters
         cv2.createTrackbar('Dead Zone', 'Color Adjustments', self.dead_zone, 200, lambda x: None)
         cv2.createTrackbar('Base Speed', 'Color Adjustments', self.base_speed, 255, lambda x: None)
+        cv2.createTrackbar('Min Speed', 'Color Adjustments', 180, 255, lambda x: None)  # New: adjustable minimum speed
         
     def get_trackbar_values(self):
         """Read current trackbar values"""
@@ -101,6 +103,7 @@ class AutonomousBlobTracker:
         self.max_blob_area = cv2.getTrackbarPos('Max Area', 'Color Adjustments')
         self.dead_zone = cv2.getTrackbarPos('Dead Zone', 'Color Adjustments')
         self.base_speed = cv2.getTrackbarPos('Base Speed', 'Color Adjustments')
+        self.min_motor_speed = cv2.getTrackbarPos('Min Speed', 'Color Adjustments')  # Read minimum speed
     
     def detect_blob(self, frame):
         """Detect the colored blob in the frame"""
@@ -157,10 +160,13 @@ class AutonomousBlobTracker:
             return 0, "CENTERED - In dead zone"
         
         # Calculate proportional speed based on error
-        # Larger error = faster speed
-        speed_factor = min(abs(error_y) / height, 1.0)  # Normalize to 0-1
-        speed = int(self.base_speed * speed_factor)
-        speed = max(50, min(speed, self.max_speed))  # Clamp between 50-255
+        # Larger error = faster speed (more aggressive speed curve)
+        speed_factor = min(abs(error_y) / (height * 0.4), 1.0)  # Reach max speed at 40% of frame height
+        speed = int(self.base_speed + (self.max_speed - self.base_speed) * speed_factor)
+        
+        # Get minimum speed from trackbar (or default to 180)
+        min_speed = getattr(self, 'min_motor_speed', 180)
+        speed = max(min_speed, min(speed, self.max_speed))  # Clamp between min and max
         
         if error_y > 0:
             # Object is BELOW center → Move FORWARD
