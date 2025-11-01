@@ -4,8 +4,8 @@ import numpy as np
 class BlobTracker:
     def __init__(self):
         # Default HSV color range (Blue)
-        self.lower_hsv = np.array([100, 100, 100])
-        self.upper_hsv = np.array([130, 255, 255])
+        self.lower_hsv = np.array([34, 30, 94])
+        self.upper_hsv = np.array([68, 116, 229])
         
         # Blob size limits (in pixels)
         self.min_blob_area = 500
@@ -60,35 +60,29 @@ class BlobTracker:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        return mask, contours
+        return mask
     
-    def get_largest_blob(self, contours):
-        """Get the largest valid blob"""
-        valid_blobs = []
+    def get_average_position(self, mask):
+        """Calculate average position of all white pixels (1s) in the mask"""
+        # Find all coordinates where mask value is 255 (white/1)
+        y_coords, x_coords = np.where(mask == 255)
         
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if self.min_blob_area < area < self.max_blob_area:
-                valid_blobs.append((contour, area))
-        
-        if not valid_blobs:
+        # Check if any white pixels exist
+        if len(x_coords) == 0 or len(y_coords) == 0:
             return None, 0
         
-        # Return largest blob
-        largest_blob = max(valid_blobs, key=lambda x: x[1])
-        return largest_blob[0], largest_blob[1]
-    
-    def get_blob_center(self, contour):
-        """Calculate centroid of blob"""
-        M = cv2.moments(contour)
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            return (cx, cy)
-        return None
+        # Calculate total area (number of white pixels)
+        area = len(x_coords)
+        
+        # Check if area is within bounds
+        if area < self.min_blob_area or area > self.max_blob_area:
+            return None, 0
+        
+        # Calculate average position
+        avg_x = int(np.mean(x_coords))
+        avg_y = int(np.mean(y_coords))
+        
+        return (avg_x, avg_y), area
     
     def get_direction_command(self, center, frame_shape):
         """Determine rover movement command based on blob position"""
@@ -126,18 +120,18 @@ class BlobTracker:
                      (200, 200, 200), 1)
         
         if center:
-            # Draw blob center
-            cv2.circle(frame, center, 10, (0, 255, 0), -1)
-            cv2.circle(frame, center, 15, (0, 255, 0), 2)
+            # Draw single RED circle at average position
+            cv2.circle(frame, center, 10, (0, 0, 255), -1)
+            cv2.circle(frame, center, 15, (0, 0, 255), 2)
             
-            # Draw line from blob to center
+            # Draw line from average position to center
             cv2.line(frame, center, (frame_center_x, center[1]), (0, 255, 255), 2)
             
             # Display info
-            cv2.putText(frame, f"Area: {area}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(frame, f"Position: {center}", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"Pixels: {area}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame, f"Avg Position: {center}", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Display command
         cv2.putText(frame, command, (10, height - 20), 
@@ -153,10 +147,14 @@ def main():
     # Open camera (0 for default camera, or video file path)
     cap = cv2.VideoCapture(0)
     
+    if not cap.isOpened():
+        print("Error: Could not open camera")
+        return
+    
     # Set camera properties for better performance
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_FPS, 60)
     
     # Try to reduce motion blur (not all cameras support this)
     try:
@@ -165,12 +163,14 @@ def main():
         pass
     
     print("=" * 50)
-    print("BLOB TRACKER STARTED")
+    print("BLOB TRACKER - AVERAGE POSITION MODE")
     print("=" * 50)
     print("Controls:")
     print("  - Adjust trackbars to tune color detection")
     print("  - Press 'q' to quit")
     print("  - Press 's' to save current settings")
+    print("=" * 50)
+    print("Tracking: Single RED point = average of all detected pixels")
     print("=" * 50)
     
     while True:
@@ -182,22 +182,11 @@ def main():
         # Get current trackbar values
         tracker.get_trackbar_values()
         
-        # Detect blob
-        mask, contours = tracker.detect_blob(frame)
+        # Detect blob and get mask
+        mask = tracker.detect_blob(frame)
         
-        # Get largest valid blob
-        blob, area = tracker.get_largest_blob(contours)
-        
-        # Get blob center
-        center = None
-        if blob is not None:
-            center = tracker.get_blob_center(blob)
-            tracker.last_position = center
-            tracker.frames_lost = 0
-        else:
-            tracker.frames_lost += 1
-            if tracker.frames_lost < tracker.max_frames_lost:
-                center = tracker.last_position  # Use last known position
+        # Get average position of all white pixels
+        center, area = tracker.get_average_position(mask)
         
         # Get movement command
         command = tracker.get_direction_command(center, frame.shape)
@@ -207,7 +196,6 @@ def main():
         
         # Show frames
         cv2.imshow('Blob Tracker', frame)
-        cv2.imshow('Mask', mask)
         
         # Handle key presses
         key = cv2.waitKey(1) & 0xFF
